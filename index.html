@@ -1,1 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PID Tuning Helper</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #111827;
+      color: #e5e7eb;
+      margin: 0;
+      padding: 20px;
+    }
+    h1, h2 {
+      color: #f9fafb;
+    }
+    .card {
+      background: #1f2933;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+      max-width: 900px;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
+      font-size: 0.9rem;
+      color: #d1d5db;
+    }
+    input, select {
+      margin-top: 4px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      border: 1px solid #4b5563;
+      background: #111827;
+      color: #e5e7eb;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .col {
+      flex: 1 1 150px;
+      min-width: 150px;
+    }
+    button {
+      margin-top: 16px;
+      padding: 8px 16px;
+      border-radius: 4px;
+      border: none;
+      background: #2563eb;
+      color: #f9fafb;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #1d4ed8;
+    }
+    .output {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 6px;
+      background: #020617;
+      border: 1px solid #374151;
+      font-size: 0.9rem;
+      white-space: pre-line;
+    }
+    .tagline {
+      font-size: 0.85rem;
+      color: #9ca3af;
+      margin-bottom: 10px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      margin-right: 6px;
+      margin-top: 4px;
+      background: #111827;
+      border: 1px solid #4b5563;
+      color: #e5e7eb;
+    }
+  </style>
+</head>
+<body>
+  <h1>PID Tuning Helper</h1>
+  <div class="tagline">
+    Enter your current gains, describe what the loop is doing, and get suggested adjustments + explanations.
+  </div>
 
+  <div class="card">
+    <h2>1. System context</h2>
+    <div class="row">
+      <div class="col">
+        <label>System type</label>
+        <select id="systemType">
+          <option value="heater">Heater / temperature</option>
+          <option value="motor">Motor / speed</option>
+          <option value="position">Position / servo</option>
+          <option value="valve">Valve / flow / pressure</option>
+          <option value="other">Other / unknown</option>
+        </select>
+      </div>
+      <div class="col">
+        <label>Response speed</label>
+        <select id="responseSpeed">
+          <option value="slow">Slow (seconds to minutes)</option>
+          <option value="medium">Medium (hundreds of ms)</option>
+          <option value="fast">Fast (tens of ms or less)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. Current PID gains</h2>
+    <div class="row">
+      <div class="col">
+        <label>Proportional (Kp)</label>
+        <input type="number" id="kp" step="0.0001" value="1.0">
+      </div>
+      <div class="col">
+        <label>Integral (Ki)</label>
+        <input type="number" id="ki" step="0.0001" value="0.0">
+      </div>
+      <div class="col">
+        <label>Derivative (Kd)</label>
+        <input type="number" id="kd" step="0.0001" value="0.0">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. What is the loop doing?</h2>
+    <label>Main issue</label>
+    <select id="mainIssue">
+      <option value="too_slow">Too slow to reach setpoint</option>
+      <option value="overshoot">Overshoots setpoint then settles</option>
+      <option value="oscillating">Oscillates / hunts around setpoint</option>
+      <option value="steady_state_error">Never quite reaches setpoint (steady-state error)</option>
+      <option value="noisy_output">Output is noisy / twitchy</option>
+      <option value="overshoot_and_slow">Big overshoot and then very slow to settle</option>
+      <option value="good">Looks pretty good, just want it a bit tighter</option>
+    </select>
+
+    <label style="margin-top:12px;">Extra notes (optional, just for you)</label>
+    <input type="text" id="notes" placeholder="e.g. 'Heater with SSR, 10s sample time, big thermal lag'">
+  </div>
+
+  <div class="card">
+    <h2>4. Suggestions</h2>
+    <button onclick="suggestTuning()">Generate tuning suggestion</button>
+    <div class="output" id="outputBox">
+      Waiting for input…
+    </div>
+  </div>
+
+  <script>
+    function clamp(val, min, max) {
+      return Math.min(Math.max(val, min), max);
+    }
+
+    function suggestTuning() {
+      const kp = parseFloat(document.getElementById('kp').value) || 0;
+      const ki = parseFloat(document.getElementById('ki').value) || 0;
+      const kd = parseFloat(document.getElementById('kd').value) || 0;
+      const issue = document.getElementById('mainIssue').value;
+      const systemType = document.getElementById('systemType').value;
+      const responseSpeed = document.getElementById('responseSpeed').value;
+
+      let newKp = kp;
+      let newKi = ki;
+      let newKd = kd;
+      let actions = [];
+      let notes = [];
+
+      // Base multipliers
+      const upSmall   = 1.15;
+      const upMedium  = 1.35;
+      const downSmall = 0.85;
+      const downMedium= 0.65;
+
+      // Heuristic adjustments based on issue
+      switch (issue) {
+        case 'too_slow':
+          newKp *= upMedium;
+          actions.push("Increase Kp to make the response faster.");
+          if (ki > 0) {
+            newKi *= upSmall;
+            actions.push("Slightly increase Ki to remove residual error faster.");
+          }
+          notes.push("If it starts to overshoot after this, back Kp off a bit.");
+          break;
+
+        case 'overshoot':
+          newKp *= downSmall;
+          actions.push("Reduce Kp to soften the initial punch and reduce overshoot.");
+          if (kd === 0) {
+            newKd = kp * 0.1;
+            actions.push("Add a bit of Kd as a brake to slow the approach to setpoint.");
+          } else {
+            newKd *= upSmall;
+            actions.push("Increase Kd slightly to add more damping.");
+          }
+          break;
+
+        case 'oscillating':
+          newKp *= downMedium;
+          actions.push("Reduce Kp to move away from the edge of instability.");
+          if (ki > 0) {
+            newKi *= downSmall;
+            actions.push("Reduce Ki to avoid windup and slow oscillations.");
+          }
+          if (kd > 0) {
+            newKd *= upSmall;
+            actions.push("Increase Kd a bit to help damp the oscillation.");
+          } else {
+            newKd = kp * 0.05;
+            actions.push("Add a small Kd term to help damp the oscillation.");
+          }
+          break;
+
+        case 'steady_state_error':
+          if (ki === 0) {
+            newKi = kp * 0.05;
+            actions.push("Add some Ki so the loop can eliminate steady-state error.");
+          } else {
+            newKi *= upMedium;
+            actions.push("Increase Ki to push out the remaining steady-state error.");
+          }
+          notes.push("Watch for slow oscillations after increasing Ki; if they appear, back Ki off slightly.");
+          break;
+
+        case 'noisy_output':
+          newKp *= downSmall;
+          actions.push("Reduce Kp to make the controller less sensitive to noise.");
+          if (kd > 0) {
+            newKd *= downMedium;
+            actions.push("Reduce Kd; derivative reacts strongly to noise.");
+          }
+          notes.push("If possible, also increase your sample time or add filtering on the measurement.");
+          break;
+
+        case 'overshoot_and_slow':
+          newKp *= downSmall;
+          actions.push("Reduce Kp to cut overshoot.");
+          if (ki > 0) {
+            newKi *= downSmall;
+            actions.push("Reduce Ki to avoid long, slow wobble.");
+          }
+          if (kd === 0) {
+            newKd = kp * 0.1;
+            actions.push("Add some Kd to help it settle faster without overshoot.");
+          } else {
+            newKd *= upSmall;
+            actions.push("Increase Kd slightly to improve damping.");
+          }
+          break;
+
+        case 'good':
+          newKp *= upSmall;
+          actions.push("Slightly increase Kp to tighten response.");
+          if (ki > 0) {
+            newKi *= upSmall;
+            actions.push("Slightly increase Ki if you still see a tiny steady-state error.");
+          }
+          notes.push("If overshoot appears after this tweak, undo the last change to Kp.");
+          break;
+      }
+
+      // System-type sanity nudges
+      if (systemType === 'heater') {
+        // Heaters: low Ki, tiny or zero Kd
+        newKi = clamp(newKi, 0, kp * 0.2);
+        newKd = clamp(newKd, 0, kp * 0.1);
+        notes.push("For heaters, keep Ki modest and Kd small or zero; thermal systems are naturally slow.");
+      } else if (systemType === 'motor' || systemType === 'position') {
+        // Faster systems can tolerate more Kd
+        newKd = clamp(newKd, 0, kp * 0.5);
+        notes.push("For fast systems (motors/position), Kd is often very helpful for damping.");
+      }
+
+      // Response speed hint
+      if (responseSpeed === 'slow') {
+        notes.push("Because the system is slow, make one change at a time and wait a full response before judging.");
+      } else if (responseSpeed === 'fast') {
+        notes.push("Fast systems can go unstable quickly—log data if you can and make small changes.");
+      }
+
+      const out = [
+        "Suggested new gains (starting point, not gospel):",
+        `  Kp: ${kp.toFixed(5)} → ${newKp.toFixed(5)}`,
+        `  Ki: ${ki.toFixed(5)} → ${newKi.toFixed(5)}`,
+        `  Kd: ${kd.toFixed(5)} → ${newKd.toFixed(5)}`,
+        "",
+        "What to do next:",
+        "• " + actions.join("\n• "),
+        "",
+        "How to test:",
+        "• Apply these gains.",
+        "• Step the setpoint by a reasonable amount.",
+        "• Watch: rise time, overshoot, oscillation, and final error.",
+        "• If it gets worse, revert and move in the opposite direction.",
+        "",
+        "Notes:",
+        "• " + (notes.length ? notes.join("\n• ") : "No extra notes for this case.")
+      ].join("\n");
+
+      document.getElementById('outputBox').textContent = out;
+    }
+  </script>
+</body>
+</html>
